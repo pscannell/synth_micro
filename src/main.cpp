@@ -6,6 +6,8 @@
 // ----------------------------------------------------------------------------
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "diag/Trace.h"
 
 extern "C" {
@@ -14,6 +16,7 @@ extern "C" {
 #include "Timer.h"
 #include "BlinkLed.h"
 #include "ssd1306.h"
+#include "rtt_io.h"
 }
 
 #include "OSC/OSCMessage.h"
@@ -78,13 +81,31 @@ void keyMuxSel(uint32_t sel);
 uint32_t scanKeys();
 void remapKeys();
 void checkForKeyEvent();
+void updateKeyStateNoOsc();
 void updateKnobs() ;
 void checkEncoder(void) ;
+void setLedState(uint8_t stat);
+void rttHandleCommandLine(const char *line);
+void rttService(void);
+void rttEmitTelemetry(void);
+uint32_t packKeyBits(void);
 
 //foot
 void checkFootSwitch (void) ;
 
+// RTT state
+uint8_t g_led_state = 0;
+int32_t g_encoder_accum = 0;
+uint8_t g_encoder_button = 0;
+uint8_t g_foot_state = 0;
+uint32_t g_next_rtt_tick = 0;
+uint32_t g_next_encoder_tick = 0;
+const int8_t ENC_STEPS_PER_DETENT = 2;
+const uint8_t ENCODER_INVERT = 1;
+
 int main(int argc, char* argv[]) {
+	// SystemInit();
+    // SystemCoreClockUpdate();
 
 	OSCMessage msgIn;
 
@@ -111,6 +132,10 @@ int main(int argc, char* argv[]) {
 	uart2_init();
 
 	hardwareInit();
+	rtt_init();
+	g_next_rtt_tick = timer_now() + 1000;
+	g_next_encoder_tick = timer_now() + 10;
+	rtt_printf("RTT ready. Commands: help, led <0-7>, dump, oled <text>\n");
 
 	// Infinite loop
 
@@ -133,6 +158,17 @@ int main(int argc, char* argv[]) {
 	stopwatchStart();
 
 	while (1) {
+		rttService();
+		if (scanKeys() == 0) {
+			updateKeyStateNoOsc();
+			checkFootSwitch();
+		}
+		updateKnobs();
+		if ((int32_t) (timer_now() - g_next_encoder_tick) >= 0) {
+			g_next_encoder_tick = timer_now() + 10; // 1 ms at 10 kHz tick rate.
+			checkEncoder();
+		}
+
 		if (slip.recvMessage()) {
 			// fill the message and dispatch it
 
@@ -164,6 +200,7 @@ int main(int argc, char* argv[]) {
 	stopwatchStart();   // used to check encoder only 1 per 5 ms
 
 	while (1) {
+		rttService();
 		if (slip.recvMessage()) {
 			// fill the message and dispatch it
 
@@ -228,8 +265,10 @@ void hardwareInit(void){
 
 	// Enc lines
 	// config as input
+	// GPIO_StructInit(&GPIO_InitStructure);
 	RCC_AHBPeriphClockCmd(RCC_AHBPeriph_GPIOB, ENABLE);
 	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_14 | GPIO_Pin_13 | GPIO_Pin_15;
+	// GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
 	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN;
 	GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
 	GPIO_Init(GPIOB, &GPIO_InitStructure);
@@ -379,58 +418,143 @@ void oledControl(OSCMessage &msg) {
 	ssd1306_refresh_line(line);
 }
 
+void setLedState(uint8_t stat) {
+	g_led_state = stat & 0x7;
+
+	if (g_led_state == 0) {
+		AUX_LED_RED_OFF;
+		AUX_LED_GREEN_OFF;
+		AUX_LED_BLUE_OFF;
+	}
+	if (g_led_state == 1) {
+		AUX_LED_RED_OFF;
+		AUX_LED_GREEN_OFF;
+		AUX_LED_BLUE_ON;
+	}
+	if (g_led_state == 2) {
+		AUX_LED_RED_OFF;
+		AUX_LED_GREEN_ON;
+		AUX_LED_BLUE_OFF;
+	}
+	if (g_led_state == 3) {
+		AUX_LED_RED_OFF;
+		AUX_LED_GREEN_ON;
+		AUX_LED_BLUE_ON;
+	}
+	if (g_led_state == 4) {
+		AUX_LED_RED_ON;
+		AUX_LED_GREEN_OFF;
+		AUX_LED_BLUE_OFF;
+	}
+	if (g_led_state == 5) {
+		AUX_LED_RED_ON;
+		AUX_LED_GREEN_OFF;
+		AUX_LED_BLUE_ON;
+	}
+	if (g_led_state == 6) {
+		AUX_LED_RED_ON;
+		AUX_LED_GREEN_ON;
+		AUX_LED_BLUE_OFF;
+	}
+	if (g_led_state == 7) {
+		AUX_LED_RED_ON;
+		AUX_LED_GREEN_ON;
+		AUX_LED_BLUE_ON;
+	}
+}
+
+uint32_t packKeyBits(void) {
+	uint32_t bits = 0;
+	uint32_t i;
+	for (i = 0; i < 28; i++) {
+		if (keyValuesLast[i]) {
+			bits |= (1u << i);
+		}
+	}
+	return bits;
+}
+
+void rttEmitTelemetry(void) {
+	rtt_printf(
+			"STAT knobs=%lu,%lu,%lu,%lu,%lu,%lu keys=%08lx enc=%ld encbtn=%u foot=%u led=%u\n",
+			(unsigned long) knobValues[0],
+			(unsigned long) knobValues[1],
+			(unsigned long) knobValues[2],
+			(unsigned long) knobValues[3],
+			(unsigned long) knobValues[4],
+			(unsigned long) knobValues[5],
+			(unsigned long) packKeyBits(),
+			(long) g_encoder_accum,
+			(unsigned) g_encoder_button,
+			(unsigned) g_foot_state,
+			(unsigned) g_led_state);
+}
+
+void rttHandleCommandLine(const char *line) {
+	if ((line == 0) || (line[0] == '\0')) {
+		return;
+	}
+	if (strcmp(line, "help") == 0) {
+		rtt_printf("CMD help | dump | led <0-7> | oled <text>\n");
+		return;
+	}
+	if (strcmp(line, "dump") == 0) {
+		rttEmitTelemetry();
+		return;
+	}
+	if (strncmp(line, "led ", 4) == 0) {
+		int stat = atoi(line + 4);
+		if (stat >= 0 && stat <= 7) {
+			setLedState((uint8_t) stat);
+			rtt_printf("ACK led %d\n", stat);
+		} else {
+			rtt_printf("ERR led range 0..7\n");
+		}
+		return;
+	}
+	if (strncmp(line, "oled ", 5) == 0) {
+		char text[22];
+		uint32_t i;
+		const char *msg = line + 5;
+		for (i = 0; i < 1024; i++) {
+			pix_buf[i] = 0;
+		}
+		snprintf(text, sizeof(text), "%s", msg);
+		println_8(text, (int) strlen(text), 1, 18);
+		ssd1306_refresh();
+		rtt_printf("ACK oled\n");
+		return;
+	}
+	rtt_printf("ERR unknown command: %s\n", line);
+}
+
+void rttService(void) {
+	char line[128];
+	uint32_t now = timer_now();
+
+	while (rtt_read_line(line, sizeof(line))) {
+		rttHandleCommandLine(line);
+	}
+
+	if ((int32_t) (now - g_next_rtt_tick) >= 0) {
+		g_next_rtt_tick = now + 1000; // 100 ms at 10 kHz tick rate.
+		rttEmitTelemetry();
+	}
+}
+
 void ledControl(OSCMessage &msg) {
 
 	blink_led_on();
 
-	int stat;
+	int stat = 0;
 
 	// digitalWrite(ledPin, LOW);
 	if (msg.isInt(0)) {
 		stat = msg.getInt(0);
-
-		stat %= 8;
-
-		if (stat == 0) {
-			AUX_LED_RED_OFF;
-			AUX_LED_GREEN_OFF;
-			AUX_LED_BLUE_OFF;
+		if (stat < 0) {
+			stat = 0;
 		}
-		if (stat == 1) {
-			AUX_LED_RED_OFF;
-			AUX_LED_GREEN_OFF;
-			AUX_LED_BLUE_ON;
-		}
-		if (stat == 2) {
-			AUX_LED_RED_OFF;
-			AUX_LED_GREEN_ON;
-			AUX_LED_BLUE_OFF;
-		}
-		if (stat == 3) {
-			AUX_LED_RED_OFF;
-			AUX_LED_GREEN_ON;
-			AUX_LED_BLUE_ON;
-		}
-		if (stat == 4) {
-			AUX_LED_RED_ON;
-			AUX_LED_GREEN_OFF;
-			AUX_LED_BLUE_OFF;
-		}
-		if (stat == 5) {
-			AUX_LED_RED_ON;
-			AUX_LED_GREEN_OFF;
-			AUX_LED_BLUE_ON;
-		}
-		if (stat == 6) {
-			AUX_LED_RED_ON;
-			AUX_LED_GREEN_ON;
-			AUX_LED_BLUE_OFF;
-		}
-		if (stat == 7) {
-			AUX_LED_RED_ON;
-			AUX_LED_GREEN_ON;
-			AUX_LED_BLUE_ON;
-		}
+		setLedState((uint8_t) (stat % 8));
 	}
 }
 
@@ -634,20 +758,81 @@ void checkForKeyEvent() {
 	}
 }
 
+void updateKeyStateNoOsc() {
+	uint32_t i;
+	remapKeys();
+	for (i = 0; i < 28; i++) {
+		if ((keyValues[0][i]) && (keyValues[1][i]) && (keyValues[2][i]) && (keyValues[3][i])) {
+			keyValuesLast[i] = 100;
+		}
+		if ((!keyValues[0][i]) && (!keyValues[1][i]) && (!keyValues[2][i]) && (!keyValues[3][i])) {
+			keyValuesLast[i] = 0;
+		}
+	}
+}
+
 /// end keys
 
 void updateKnobs() {
+	// Per-channel filtering + endpoint hysteresis to reduce jitter and make
+	// full-scale positions "stick" at 0/1023.
+	static uint16_t filt[6] = {0, 0, 0, 0, 0, 0};
+	static uint8_t latch_low[6] = {0, 0, 0, 0, 0, 0};
+	static uint8_t latch_high[6] = {0, 0, 0, 0, 0, 0};
+	uint16_t raw[6];
+	uint32_t i;
+
+	// Hysteresis thresholds (10-bit ADC scale).
+	const uint16_t HIGH_LOCK = 1016;
+	const uint16_t HIGH_RELEASE = 1000;
+	const uint16_t LOW_LOCK = 8;
+	const uint16_t LOW_RELEASE = 20;
 
 	// see if a new conversion is ready
 	if ((DMA_GetFlagStatus(DMA1_FLAG_TC1)) == SET) {
 		DMA_ClearFlag(DMA1_FLAG_TC1);
 
-		knobValues[4] = RegularConvData_Tab[0];
-		knobValues[0] = RegularConvData_Tab[1];
-		knobValues[1] = RegularConvData_Tab[2];
-		knobValues[3] = RegularConvData_Tab[3];
-		knobValues[2] = RegularConvData_Tab[4];
-		knobValues[5] = RegularConvData_Tab[5];
+		raw[4] = (uint16_t) RegularConvData_Tab[0];
+		raw[0] = (uint16_t) RegularConvData_Tab[1];
+		raw[1] = (uint16_t) RegularConvData_Tab[2];
+		raw[3] = (uint16_t) RegularConvData_Tab[3];
+		raw[2] = (uint16_t) RegularConvData_Tab[4];
+		raw[5] = (uint16_t) RegularConvData_Tab[5];
+
+		for (i = 0; i < 6; i++) {
+			uint16_t v = raw[i];
+
+			// 1st-order low-pass filter: 75% old + 25% new.
+			filt[i] = (uint16_t) (((uint32_t) filt[i] * 3u + (uint32_t) v) >> 2);
+			v = filt[i];
+
+			// Rail hysteresis for stable endpoints.
+			if (latch_high[i]) {
+				if (v <= HIGH_RELEASE) {
+					latch_high[i] = 0;
+				}
+			} else if (v >= HIGH_LOCK) {
+				latch_high[i] = 1;
+				latch_low[i] = 0;
+			}
+
+			if (latch_low[i]) {
+				if (v >= LOW_RELEASE) {
+					latch_low[i] = 0;
+				}
+			} else if (v <= LOW_LOCK) {
+				latch_low[i] = 1;
+				latch_high[i] = 0;
+			}
+
+			if (latch_high[i]) {
+				knobValues[i] = 1023;
+			} else if (latch_low[i]) {
+				knobValues[i] = 0;
+			} else {
+				knobValues[i] = v;
+			}
+		}
 	}
 }
 
@@ -666,6 +851,7 @@ void checkFootSwitch (void) {
 	if (foot_debounce[0] == foot_debounce[1]){
 		if ((knobValues[5] < 100) && foot_last){
 			foot_last = 0;
+			g_foot_state = 0;
 			// send press
 			OSCMessage msgEncoder("/fs");
 			msgEncoder.add(1);
@@ -674,6 +860,7 @@ void checkFootSwitch (void) {
 		}
 		if ((knobValues[5] > 900) && !foot_last){
 			foot_last = 1;
+			g_foot_state = 1;
 			// send press
 			OSCMessage msgEncoder("/fs");
 			msgEncoder.add(0);
@@ -684,21 +871,27 @@ void checkFootSwitch (void) {
 }
 
 void checkEncoder(void) {
-
-	static uint8_t encoder_last = 0;
-	uint8_t encoder = 0;
-
+	// Robust quadrature decode:
+	// - Uses Gray-code transition table to reject illegal/bouncy edges.
+	// - Requires 4 quarter-steps before reporting one detent move.
+	static uint8_t prev_ab = 0;
+	static int8_t substep = 0;
 
 	// because the encoder has a crappy switch, we need  a
-	// different debouce time for press and release
-	// assume checkEncoder gets called every 5ms,
-	// we will wait 10 counts for press and 50 counts for release
+	// different debounce time for press and release.
+	// checkEncoder is called every ~5 ms in normal run loop.
+	// Use shorter windows to avoid UI "hang" feeling on click.
 	#define PRESS 0
 	#define RELEASE 1
+	const uint8_t ENC_BTN_PRESS_COUNTS = 6;    // ~30 ms
+	const uint8_t ENC_BTN_RELEASE_COUNTS = 12; // ~60 ms
+	// const uint8_t PRESS = 0;
+	// const uint8_t RELEASE = 1;
 	uint8_t button;
 	static uint8_t button_last = RELEASE;
 	static uint8_t press_count = 0;
 	static uint8_t release_count = 0;
+	uint8_t ab = 0;
 
 	button = (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_13));
 
@@ -706,9 +899,10 @@ void checkEncoder(void) {
 		press_count++;
 		release_count = 0;
 	}
-	if ((press_count > 10) && (button_last == RELEASE)){	// press
+	if ((press_count > ENC_BTN_PRESS_COUNTS) && (button_last == RELEASE)){	// press
 			button_last = PRESS;
 			release_count = 0;
+			g_encoder_button = 1;
 
 			// send press
 			OSCMessage msgEncoder("/encbut");
@@ -721,9 +915,10 @@ void checkEncoder(void) {
 		release_count++;
 		press_count = 0;
 	}
-	if ((release_count > 50) && (button_last == PRESS)){	// release
+	if ((release_count > ENC_BTN_RELEASE_COUNTS) && (button_last == PRESS)){	// release
 			button_last = RELEASE;
 			press_count = 0;
+			g_encoder_button = 0;
 
 			// send release
 			OSCMessage msgEncoder("/encbut");
@@ -736,35 +931,42 @@ void checkEncoder(void) {
 
 
 	// turning
-	encoder = 0;
+	ab = 0;
 	if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_14))
-		encoder |= 0x1;
+		ab |= 0x1;
 	if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_15))
-		encoder |= 0x2;
+		ab |= 0x2;
 
-	if (encoder != encoder_last) {
+	{
+		static const int8_t qdec[16] = {
+			0, -1,  1,  0,
+			1,  0,  0, -1,
+			-1, 0,  0,  1,
+			0,  1, -1,  0
+		};
+		uint8_t idx = (uint8_t) ((prev_ab << 2) | ab);
+		int8_t step = qdec[idx];
+		prev_ab = ab;
 
-		if (encoder_last == 0) {
-			OSCMessage msgEncoder("/enc");
-			if (encoder == 2)
-				msgEncoder.add(0);
-			if (encoder == 1)
-				msgEncoder.add(1);
-			msgEncoder.send(oscBuf);
-			slip.sendMessage(oscBuf.buffer, oscBuf.length);
+		if (step != 0) {
+			substep += step;
+			if (substep >= ENC_STEPS_PER_DETENT) {
+				// Direction mapping: 1 = CW, 0 = CCW (or inverted by flag).
+				OSCMessage msgEncoder("/enc");
+				msgEncoder.add(ENCODER_INVERT ? 0 : 1);
+				msgEncoder.send(oscBuf);
+				slip.sendMessage(oscBuf.buffer, oscBuf.length);
+				g_encoder_accum += ENCODER_INVERT ? -1 : 1;
+				substep = 0;
+			} else if (substep <= -ENC_STEPS_PER_DETENT) {
+				OSCMessage msgEncoder("/enc");
+				msgEncoder.add(ENCODER_INVERT ? 1 : 0);
+				msgEncoder.send(oscBuf);
+				slip.sendMessage(oscBuf.buffer, oscBuf.length);
+				g_encoder_accum += ENCODER_INVERT ? 1 : -1;
+				substep = 0;
+			}
 		}
-		if (encoder_last == 3) {
-			OSCMessage msgEncoder("/enc");
-			if (encoder == 1)
-				msgEncoder.add(0);
-			if (encoder == 2)
-				msgEncoder.add(1);
-			msgEncoder.send(oscBuf);
-			slip.sendMessage(oscBuf.buffer, oscBuf.length);
-		}
-		encoder_last = encoder;
-
-		//msgEncoder.setAddress("/enc");
 	}
 }
 

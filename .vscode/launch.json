@@ -9,42 +9,42 @@
             "device": "STM32F0",
             "cwd": "${workspaceRoot}",
             "configFiles": [
-                "./openocd/target/stm32f0discovery.cfg"
+                "./openocd/interface/raspberrypi-native.cfg"
+                // "./openocd/target/stm32f0x.cfg"
             ],
             "svdFile": "./openocd/svd/STM32F0xx.svd",
-            "executable": "./Build/Open_synth_STM32F0_debug.elf",
+            "executable": "./build/synth.elf",
             "request": "launch",
             "type": "cortex-debug",
-            "servertype": "openocd",
-            "runToMain": true
+            "servertype": "openocd"
         },
-        {
-            "showDevDebugOutput": true,
-            "cwd": "${workspaceRoot}",
-            "executable": "./build/.elf",
-            "name": "Debug STM32",
-            "request": "launch",
-            "type": "cortex-debug",
-            "servertype": "openocd",
-            "preLaunchTask": "Build STM",
-            "device": "stlink",
-            "configFiles": [
-                "openocd.cfg"
-            ]
-        },
-        {
-            "showDevDebugOutput": "parsed",
-            "cwd": "${workspaceRoot}",
-            "executable": "./build/.elf",
-            "name": "Attach STM32",
-            "request": "attach",
-            "type": "cortex-debug",
-            "servertype": "openocd",
-            "preLaunchTask": "Build STM",
-            "device": "",
-            "configFiles": [
-                "openocd.cfg"
-            ]
-        }
+        // {
+        //     "showDevDebugOutput": true,
+        //     "cwd": "${workspaceRoot}",
+        //     "executable": "./build/.elf",
+        //     "name": "Debug STM32",
+        //     "request": "launch",
+        //     "type": "cortex-debug",
+        //     "servertype": "openocd",
+        //     "preLaunchTask": "Build STM",
+        //     "device": "stlink",
+        //     "configFiles": [
+        //         "openocd.cfg"
+        //     ]
+        // },
+        // {
+        //     "showDevDebugOutput": "parsed",
+        //     "cwd": "${workspaceRoot}",
+        //     "executable": "./build/.elf",
+        //     "name": "Attach STM32",
+        //     "request": "attach",
+        //     "type": "cortex-debug",
+        //     "servertype": "openocd",
+        //     "preLaunchTask": "Build STM",
+        //     "device": "",
+        //     "configFiles": [
+        //         "openocd.cfg"
+        //     ]
+        // }
     ]
 }

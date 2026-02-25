@@ -13,7 +13,7 @@
 ######################################
 # target
 ######################################
-TARGET = synth
+TARGET ?= synth
 
 
 ######################################
@@ -41,6 +41,7 @@ src/BlinkLed.c \
 src/spi.c \
 src/ssd1306.c \
 src/Timer.c \
+src/rtt_io.c \
 src/uart.c \
 src/OSC/OSCMatch.c
 
@@ -82,6 +83,13 @@ src/OSC/OSCData.cpp \
 src/OSC/OSCMessage.cpp \
 src/OSC/OSCTiming.cpp \
 src/OSC/SimpleWriter.cpp
+
+ifeq ($(HELLO_OLED_TEST),1)
+TARGET := synth_hello
+BUILD_DIR := build_hello
+CXX_SOURCES := \
+src/main_hello.cpp
+endif
 
 CXX_SRCS += \
 system/src/newlib/_cxx.cpp 
@@ -189,6 +197,26 @@ LDFLAGS = $(MCU) -fmessage-length=0 -fsigned-char -ffunction-sections -fdata-sec
 
 # default action: build all
 all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).hex $(BUILD_DIR)/$(TARGET).bin
+
+flash: all
+	openocd -f openocd/interface/raspberrypi-native.cfg -c "program build/synth.elf verify reset exit"
+
+hello:
+	$(MAKE) HELLO_OLED_TEST=1
+
+flash-hello: hello
+	openocd -f openocd/interface/raspberrypi-native.cfg -c "program build_hello/synth_hello.elf verify reset exit"
+
+rtt-openocd:
+	openocd -f openocd/interface/raspberrypi-native.cfg \
+	-c "rtt setup 0x20000000 0x2000 \"SEGGER RTT\"" \
+	-c "rtt start" \
+	-c "rtt polling_interval 5" \
+	-c "rtt server start 9090 0" \
+	-c "resume"
+
+rtt-ui:
+	python3 tools/rtt_ui.py --host 127.0.0.1 --port 9090
 
 
 #######################################

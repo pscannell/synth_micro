@@ -54,6 +54,7 @@ void uart2_init(void) {
 	 * if the USART1 receive interrupt occurs
 	 */
 	USART_ITConfig(USART2, USART_IT_RXNE, ENABLE); // enable the USART1 receive interrupt
+	USART_OverrunDetectionConfig(USART2, USART_OVRDetection_Disable); // Disable overrun detection for now
 
 	/* Enable USART1 IRQ */
 	NVIC_InitStructure.NVIC_IRQChannel = USART2_IRQn;

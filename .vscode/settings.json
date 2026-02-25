@@ -1,8 +1,10 @@
 {
     "stm32-for-vscode.openOCDPath": "openocd",
     "stm32-for-vscode.makePath": "make",
-    "stm32-for-vscode.armToolchainPath": "/Users/pscan/opt/gcc-arm-none-eabi-10-2020-q4-major/bin",
-    "cortex-debug.armToolchainPath": "/Users/pscan/opt/gcc-arm-none-eabi-10-2020-q4-major/bin",
+    // "stm32-for-vscode.armToolchainPath": "/Users/pscan/opt/gcc-arm-none-eabi-10-2020-q4-major/bin",
+    "stm32-for-vscode.armToolchainPath": "/home/pscan/opt/arm-gnu-toolchain-13.3.rel1-aarch64-arm-none-eabi/bin/",
+    // "cortex-debug.armToolchainPath": "/Users/pscan/opt/gcc-arm-none-eabi-10-2020-q4-major/bin",
+    "cortex-debug.armToolchainPath": "/home/pscan/opt/arm-gnu-toolchain-13.3.rel1-aarch64-arm-none-eabi/bin/",
     "cortex-debug.openocdPath": "openocd",
     "files.associations": {
         "stm32f0xx.h": "c",
@@ -13,5 +15,6 @@
         "stdint.h": "c",
         "cstdint": "c",
         "stdint-gcc.h": "c"
-    }
+    },
+    "cortex-debug.variableUseNaturalFormat": false
 }

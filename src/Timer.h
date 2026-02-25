@@ -21,6 +21,7 @@ void timer_sleep(uint32_t ticks);
 void stopwatchStart(void);
 
 uint32_t stopwatchReport(void);
+uint32_t timer_now(void);
 
 // ----------------------------------------------------------------------------
 
